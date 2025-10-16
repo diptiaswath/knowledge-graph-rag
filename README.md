@@ -33,6 +33,7 @@ knowledge-graph-rag/
 │   └── roman_emp_graph_rag.py  # Roman Empire knowledge graph RAG
 ├── prep_text_for_rag/          # Text preparation tools
 │   └── app.py                  # Text processing application
+│   └── kg_prep.py              # Create a knowledge graph for use with app.py
 ├── healthcare/                 # Healthcare domain implementation
 │   ├── health_care_kg.py       # Healthcare knowledge graph
 │   ├── health_care_langchain.py # Healthcare RAG with LangChain
