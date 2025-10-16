@@ -1,6 +1,8 @@
 # Knowledge Graph RAG System
 
-A comprehensive implementation of Retrieval-Augmented Generation (RAG) systems using knowledge graphs and Neo4j. This repository demonstrates how to build, query, and leverage knowledge graphs for enhanced AI applications.
+A comprehensive implementation of Retrieval-Augmented Generation (RAG) systems using knowledge graphs and Neo4j. This repository demonstrates how to build, query, and leverage knowledge graphs for enhanced AI applications. 
+
+**NOTE:** This is forked from its original https://github.com/pdichone/knowledge-graph-rag, with specific updates.
 
 ## Overview
 
@@ -124,12 +126,6 @@ The RAG system combines:
 
 The system uses LLMs to extract entities from text, which are then stored in the knowledge graph for future retrieval.
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Acknowledgments
-
-- Neo4j for the graph database
-- LangChain for the RAG framework
-- OpenAI for the language models
+- Credits to its original authors of https://github.com/pdichone/knowledge-graph-rag
