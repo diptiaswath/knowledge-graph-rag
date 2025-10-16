@@ -126,6 +126,11 @@ The RAG system combines:
 
 The system uses LLMs to extract entities from text, which are then stored in the knowledge graph for future retrieval.
 
+## References
+
+- https://python.langchain.com/docs/integrations/graphs/neo4j_cypher/
+- https://neo4j.com/labs/genai-ecosystem/langchain/
+- https://platform.openai.com/docs/api-reference/embeddings/create
 
 ## Acknowledgments
 - Credits to its original authors of https://github.com/pdichone/knowledge-graph-rag
