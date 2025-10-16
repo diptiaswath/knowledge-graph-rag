@@ -52,12 +52,14 @@ knowledge-graph-rag/
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Badribn0612/knowledge-graph-rag.git
+   git clone https://github.com/diptiaswath/knowledge-graph-rag.git
    cd knowledge-graph-rag
    ```
 
 2. Install dependencies:
    ```bash
+   python -m venv rag-venv
+   source rag-venv/bin/activate
    pip install -r requirements.txt
    ```
 
