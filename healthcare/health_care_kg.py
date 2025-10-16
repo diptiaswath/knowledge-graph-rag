@@ -96,7 +96,7 @@ def create_relationships(driver, provider, patient, specialization, location):
 def main():
     driver = GraphDatabase.driver(NEO4J_URI, auth=AUTH)
 
-    with open("/home/badrinarayan/supercharge_ai_with_knowledge_graphs_rag_system_mastery_new_udemy_course/knowledge-graph-rag/knowledge-graph-rag/healthcare/healthcare.csv", mode="r") as file:
+    with open("./healthcare.csv", mode="r") as file:
         reader = csv.DictReader(file)
         print("Reading CSV file...")
 

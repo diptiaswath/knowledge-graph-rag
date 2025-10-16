@@ -152,3 +152,8 @@ widgetsnbextension==4.0.13
 wikipedia==1.4.0
 yarl==1.19.0
 zstandard==0.23.0
+
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+transformers>=4.30.0
+torch>=2.0.0

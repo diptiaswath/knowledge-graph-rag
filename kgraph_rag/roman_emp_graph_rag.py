@@ -1,259 +1,420 @@
-from dotenv import load_dotenv
-import os
-from langchain_neo4j import Neo4jGraph
+"""
+Neo4j Hybrid RAG System for Roman Empire Q&A
+A system that combines graph-based and vector-based retrieval for intelligent question answering.
+"""
 
+import os
+from typing import List, Tuple
+from dotenv import load_dotenv
+
+# LangChain imports
 from langchain_core.runnables import (
     RunnableBranch,
     RunnableLambda,
     RunnableParallel,
     RunnablePassthrough,
 )
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.prompts.prompt import PromptTemplate
-from pydantic import BaseModel, Field
-# from langchain_core.pydantic_v1 import BaseModel, Field
-from typing import Tuple, List
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.document_loaders import WikipediaLoader
 from langchain.text_splitter import TokenTextSplitter
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 
-from langchain_neo4j import Neo4jVector
-from langchain_openai import OpenAIEmbeddings
+# Neo4j imports
+from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_neo4j.vectorstores.neo4j_vector import remove_lucene_chars
 
-load_dotenv()
-
-AURA_INSTANCENAME = os.environ["AURA_INSTANCENAME"]
-NEO4J_URI = os.environ["NEO4J_URI"]
-NEO4J_USERNAME = os.environ["NEO4J_USERNAME"]
-NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
-AUTH = (NEO4J_USERNAME, NEO4J_PASSWORD)
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")
-
-chat = ChatOpenAI(api_key=OPENAI_API_KEY, temperature=0, model="gpt-4o-mini")
+# Pydantic for structured output
+from pydantic import BaseModel, Field
 
 
-kg = Neo4jGraph(
-    url=NEO4J_URI,
-    username=NEO4J_USERNAME,
-    password=NEO4J_PASSWORD,
-) #database=NEO4J_DATABASE,
-
-# # # read the wikipedia page for the Roman Empire
-# raw_documents = WikipediaLoader(query="The Roman empire").load()
-
-# # # # # Define chunking strategy
-# text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
-# documents = text_splitter.split_documents(raw_documents[:3])
-# print(documents)
-
-# llm_transformer = LLMGraphTransformer(llm=chat)
-# graph_documents = llm_transformer.convert_to_graph_documents(documents)
-
-# # store to neo4j
-# res = kg.add_graph_documents(
-#     graph_documents,
-#     include_source=True,
-#     baseEntityLabel=True,
-# )
-
-# # MATCH (n) DETACH DELETE n - use this cyper command to delete the Graphs present in neo4j
-
-# Hybrid Retrieval for RAG
-# create vector index
-vector_index = Neo4jVector.from_existing_graph(
-    OpenAIEmbeddings(),
-    search_type="hybrid",
-    node_label="Document",
-    text_node_properties=["text"],
-    embedding_node_property="embedding",
-)
-
-
-# Extract entities from text
 class Entities(BaseModel):
     """Identifying information about entities."""
-
     names: List[str] = Field(
         ...,
-        description="All the person, organization, or business entities that "
-        "appear in the text",
+        description="All the person, organization, or business entities that appear in the text",
     )
 
 
-prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "You are extracting organization and person entities from the text.",
-        ),
-        (
-            "human",
-            "Use the given format to extract information from the following "
-            "input: {question}",
-        ),
-    ]
-)
-entity_chain = prompt | chat.with_structured_output(Entities)
-
-# # Test it out:
-# res = entity_chain.invoke(
-#     {"question": "In the year of 123 there was an emperor who did not like to rule"}
-# ).names
-# print(res)
-
-# Who is Ceaser?
-# In the year of 123 there was an emperor who did not like to rule. 
-
-# Retriever
-kg.query("CREATE FULLTEXT INDEX entity IF NOT EXISTS FOR (e:__Entity__) ON EACH [e.id]")
-
-
-def generate_full_text_query(input: str) -> str:
+class Neo4jRAGSystem:
     """
-    Generate a full-text search query for a given input string.
-
-    This function constructs a query string suitable for a full-text search.
-    It processes the input string by splitting it into words and appending a
-    similarity threshold (~2 changed characters) to each word, then combines
-    them using the AND operator. Useful for mapping entities from user questions
-    to database values, and allows for some misspelings.
+    Neo4j-based hybrid RAG system combining graph and vector retrieval.
     """
-    full_text_query = ""
-    words = [el for el in remove_lucene_chars(input).split() if el]
-    for word in words[:-1]:
-        full_text_query += f" {word}~2 AND"
-    full_text_query += f" {words[-1]}~2"
-    return full_text_query.strip()
-
-
-# Fulltext index query
-def structured_retriever(question: str) -> str:
-    """
-    Collects the neighborhood of entities mentioned
-    in the question
-    """
-    result = ""
-    entities = entity_chain.invoke({"question": question})
-    for entity in entities.names:
-        print(f" Getting Entity: {entity}")
-        response = kg.query(
-            """CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
-            YIELD node,score
-            CALL {
-              WITH node
-              MATCH (node)-[r:!MENTIONS]->(neighbor)
-              RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
-              UNION ALL
-              WITH node
-              MATCH (node)<-[r:!MENTIONS]-(neighbor)
-              RETURN neighbor.id + ' - ' + type(r) + ' -> ' +  node.id AS output
-            }
-            RETURN output LIMIT 50
-            """,
-            {"query": generate_full_text_query(entity)},
+    
+    def __init__(self):
+        """Initialize the RAG system with Neo4j and OpenAI connections."""
+        load_dotenv()
+        self._setup_connections()
+        self._setup_models()
+        self._setup_retrievers()
+        self._setup_chain()
+    
+    def _setup_connections(self):
+        """Setup Neo4j and OpenAI connections."""
+        # Neo4j configuration
+        self.neo4j_uri = os.environ["NEO4J_URI"]
+        self.neo4j_username = os.environ["NEO4J_USERNAME"]
+        self.neo4j_password = os.environ["NEO4J_PASSWORD"]
+        
+        # OpenAI configuration
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        
+        # Initialize Neo4j graph
+        self.kg = Neo4jGraph(
+            url=self.neo4j_uri,
+            username=self.neo4j_username,
+            password=self.neo4j_password,
         )
-        # print(response)
-        result += "\n".join([el["output"] for el in response])
-    return result
-
-
-# print(structured_retriever("Who is Aurelian?"))
-
-
-# Final retrieval step
-def retriever(question: str):
-    print(f"Search query: {question}")
-    structured_data = structured_retriever(question)
-    unstructured_data = [
-        el.page_content for el in vector_index.similarity_search(question)
-    ]
-    final_data = f"""Structured data:
-{structured_data}
-Unstructured data:
-{"#Document ". join(unstructured_data)}
-    """
-    print(f"\nFinal Data::: ==>{final_data}")
-    return final_data
-
-
-# Define the RAG chain
-# Condense a chat history and follow-up question into a standalone question
-_template = """Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question,
-in its original language.
-Chat History:
-{chat_history}
-Follow Up Input: {question}
-Standalone question:"""  # noqa: E501
-CONDENSE_QUESTION_PROMPT = PromptTemplate.from_template(_template)
-
-
-def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List:
-    buffer = []
-    for human, ai in chat_history:
-        buffer.append(HumanMessage(content=human))
-        buffer.append(AIMessage(content=ai))
-    return buffer
-
-
-_search_query = RunnableBranch(
-    # If input includes chat_history, we condense it with the follow-up question
-    (
-        RunnableLambda(lambda x: bool(x.get("chat_history"))).with_config(
-            run_name="HasChatHistoryCheck"
-        ),  # Condense follow-up question and chat into a standalone_question
-        RunnablePassthrough.assign(
-            chat_history=lambda x: _format_chat_history(x["chat_history"])
+    
+    def _setup_models(self):
+        """Setup LLM and embedding models."""
+        self.chat = ChatOpenAI(
+            api_key=self.openai_api_key, 
+            temperature=0, 
+            model="gpt-4o-mini"
         )
-        | CONDENSE_QUESTION_PROMPT
-        | ChatOpenAI(temperature=0)
-        | StrOutputParser(),
-    ),
-    # Else, we have no chat history, so just pass through the question
-    RunnableLambda(lambda x: x["question"]),
-)
+        
+        self.embeddings = OpenAIEmbeddings()
+    
+    def _setup_retrievers(self):
+        """
+            Setup hybrid retrieval system combining vector and structured search.
+    
+            Creates two complementary retrieval mechanisms:
+            1. Vector index for semantic similarity search on document content
+            2. Entity extraction chain for structured graph traversal
+            3. Fulltext index for fuzzy entity matching with typo tolerance
+            
+            Example workflow:
+            - User: "What did Augustus accomplish?"
+            - Entity extraction → ["Augustus"] 
+            - Graph search → Augustus relationships
+            - Vector search → semantic content about accomplishments
+            - Result → precise relationships + contextual information   
+        """
+        
+        # Vector index for hybrid search
+        # Creates a vector index from existing Neo4j graph data
+        # Enables Hybrid search = vector similarity + traditional keyword search
+        # Looks for Document nodes that have both text content and embedding vectors
+        self.vector_index = Neo4jVector.from_existing_graph(
+            self.embeddings,                    # OpenAI embeddings model
+            search_type="hybrid",               # Combines vector similarity with keyword search
+            node_label="Document",              # Look for nodes labeled "Document"
+            text_node_properties=["text"],      # Uses "text" property for content
+            embedding_node_property="embedding", # Stores vectors in "embedding" property
+        )
+        
+        # Entity extraction chain
+        # Creates an LLM chain that extracts entities from user questions
+        # Takes input like: "When did Augustus become emperor?"
+        # Returns structured output: Entities(names=["Augustus"])
+        # The | operator chains: prompt → LLM → structured parsing
+        entity_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are extracting organization and person entities from the text."),
+            ("human", "Use the given format to extract information from the following input: {question}"),
+        ])
+        self.entity_chain = entity_prompt | self.chat.with_structured_output(Entities)
+        
 
-template = """Answer the question based only on the following context:
-{context}
+        # Fulltext search index creation on entity nodes
+        # Creates a fulltext index named "entity" that enabled text-based search capabilities on nodes with __Entity__label using its id property
+        # Enables fuzzy matching: "Augusus" → "Augustus" (handles typos)
+        # IF NOT EXISTS prevents errors if index already exists
+        # Searches across all nodes with __Entity__ label 
+        self.kg.query("CREATE FULLTEXT INDEX entity IF NOT EXISTS FOR (e:__Entity__) ON EACH [e.id]")
 
-Question: {question}
-Use natural language and be concise.
-Answer:"""
-prompt = ChatPromptTemplate.from_template(template)
+        
+    
+    def _setup_chain(self):
+        """
+            Setup the main conversational RAG pipeline that handles both standalone questions 
+            and followup questions with chat history
 
-chain = (
-    RunnableParallel(
-        {
-            "context": _search_query | retriever,
-            "question": RunnablePassthrough(),
-        }
-    )
-    | prompt
-    | chat
-    | StrOutputParser()
-)
+            Example Flow:
+            Input: {"question": "When did he become emperor?", "chat_history": [...]}
+                ↓
+            RunnableParallel splits into:
+                ├─ "context": search_query → retriever → "Augustus became emperor in 27 BC..."
+                ├─ "question": "When did he become emperor?" (passed through)
+                ↓
+            answer_prompt: Combines context + question into final prompt
+                ↓
+            self.chat: LLM generates answer
+                ↓
+            StrOutputParser: "Augustus became the first Roman emperor in 27 BC."
+        """
+        
+        # Template for condensing chat history
+        # Converts context-dependent questions into self-contained ones
+        # Example: 
+        # Chat History: "Who was the first emperor?" → "Augustus was the first emperor."
+        # Follow-up: "When did he become emperor?"
+        # Output standalone question: "When did Augustus become the first Roman emperor?"
+        condense_template = """Given the following conversation and a follow up question, 
+                rephrase the follow up question to be a standalone question, in its original language.
+                
+                Chat History: {chat_history}
+                Follow Up Input: {question}
+                Standalone question:"""
+        
+        self.condense_question_prompt = PromptTemplate.from_template(condense_template)
+        
+        # Search query branch for handling chat history
+        # Checks: Does input have chat history?
+        # If YES: Format history → condense with current question → return standalone question
+        # If NO: Just pass through the original question
+        self.search_query = RunnableBranch(
+            # Branch1: If chat history exists
+            (
+                RunnableLambda(lambda x: bool(x.get("chat_history"))).with_config(run_name="HasChatHistoryCheck"),
+                # Process: format history → condense question → get standalone question
+                RunnablePassthrough.assign(chat_history=lambda x: self._format_chat_history(x["chat_history"]))
+                | self.condense_question_prompt
+                | ChatOpenAI(temperature=0)
+                | StrOutputParser(),
+            ),
+            # Branch2: No chat history, use question as-is
+            RunnableLambda(lambda x: x["question"]),
+        )
+        
+        # Final answer template
+        answer_template = """Answer the question based only on the following context:
+        {context}
+        
+        Question: {question}
+        Use natural language and be concise.
+        Answer:"""
+        
+        answer_prompt = ChatPromptTemplate.from_template(answer_template)
+        
+        # Complete RAG chain
+        self.chain = (
+            RunnableParallel({
+                "context": self.search_query | self.retriever,   # Get Context
+                "question": RunnablePassthrough(),               # Pass question through
+            }) 
+            | answer_prompt                                      # Format context, question with template
+            | self.chat                                          # Send to LLM gpt-4o-mini
+            | StrOutputParser()                                  # Extract text response
+        )
 
-# # TEST it all out!
-# res_simple = chain.invoke(
-#     {
-#         "question": "How did the Roman empire fall?",
-#     }
-# )
+    def _format_chat_history(self, chat_history: List[Tuple[str, str]]) -> List:
+        """Format chat history for conversation chain."""
+        buffer = []
+        for human, ai in chat_history:
+            buffer.append(HumanMessage(content=human))
+            buffer.append(AIMessage(content=ai))
+        return buffer
 
-# print(f"\n Results === {res_simple}\n\n")
 
-res_hist = chain.invoke(
-    {
-        "question": "When did he become the first emperor?",
-        "chat_history": [
-            ("Who was the first emperor?", "Augustus was the first emperor.")
-        ],
-    }
-)
+class DataIngestion:
+    """
+        Handles data loading and graph creation.
+        It does so by transforming unstructured text into structured knowledge graph.  
+    """
+    
+    def __init__(self, rag_system: Neo4jRAGSystem):
+        self.rag_system = rag_system
+    
+    def load_and_process_wikipedia(self, query: str = "The Roman empire", num_docs: int = 3):
+        """
+           Load Wikipedia articles and convert to graph format.
+        """
+        print(f"Loading Wikipedia articles for: {query}")
+        
+        # Load documents by downloading wiki articles for the query 
+        raw_documents = WikipediaLoader(query=query).load()
+        
+        # Split into chunks - only first 3 num_docs processed
+        text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
+        documents = text_splitter.split_documents(raw_documents[:num_docs])
+        
+        # Convert to graph documents
+        # LLM reads each text chunk and extracts entities and relationships to get output graph
+        # Input text: "Augustus defeated Mark Antony at the Battle of Actium in 31 BC."
+        # Output graph:
+        # - Entity: Augustus
+        # - Entity: Mark Antony  
+        # - Entity: Battle of Actium
+        # - Relationship: (Augustus)-[DEFEATED]->(Mark Antony)
+        # - Relationship: (Battle of Actium)-[OCCURRED_IN]->(31 BC) 
+        llm_transformer = LLMGraphTransformer(llm=self.rag_system.chat)
+        graph_documents = llm_transformer.convert_to_graph_documents(documents)
+        
+        # Store in Neo4j
+        # Saves both the graph structure AND original text
+        # Creates nodes and relationships in Neo4j
+        # Enables both graph queries and vector search
+        print("Storing documents in Neo4j...")
+        self.rag_system.kg.add_graph_documents(
+            graph_documents,
+            include_source=True,  # Keep original text for vector search
+            baseEntityLabel=True, # Add __Entity__ label for indexing
+        )
+        print("Data ingestion complete!")
+    
+    def clear_database(self):
+        """
+            Clear all data from Neo4j database. 
+            Match(n): Finds all nodes
+            Detach Delete: Removes nodes and their relationships
+        """
+        print("Clearing Neo4j database...")
+        self.rag_system.kg.query("MATCH (n) DETACH DELETE n")
+        print("Database cleared!")
 
-print(f"\n === {res_hist}\n\n")
+# Extending the class to add retrieval methods
+class Neo4jRAGSystem(Neo4jRAGSystem):  
+    
+    def generate_full_text_query(self, input_text: str) -> str:
+        """
+           Generate a full-text search query with fuzzy matching.
+           Fuzzy Search Builder that returns Neo4j fulltext query syntax.
+        """
+        full_text_query = ""
+        words = [el for el in remove_lucene_chars(input_text).split() if el]
+        for word in words[:-1]:
+            full_text_query += f" {word}~2 AND"
+        
+        full_text_query += f" {words[-1]}~2"
+        return full_text_query.strip()
+    
+    def structured_retriever(self, question: str) -> str:
+        """
+            Retrieve structured data based on entities in the question.
+            Graph Relationship Finder: 
+            1. Extract entities from question: "What did Augustus accomplish?" → ["Augustus"]
+            2. Find matching nodes in graph using fuzzy search
+            3. Get relationships for each entity (excluding MENTIONS relationships)
+            4. Return relationship strings : "Augustus - RULED -> Roman Empire"
+        """
+        result = ""
+        entities = self.entity_chain.invoke({"question": question})
+        
+        for entity in entities.names:
+            print(f"Getting entity relationships for: {entity}")
+            response = self.kg.query(
+                """CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
+                YIELD node,score
+                CALL (node) {
+                  WITH node
+                  MATCH (node)-[r:!MENTIONS]->(neighbor)
+                  RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
+                  UNION ALL
+                  WITH node
+                  MATCH (node)<-[r:!MENTIONS]-(neighbor)
+                  RETURN neighbor.id + ' - ' + type(r) + ' -> ' +  node.id AS output
+                }
+                RETURN output LIMIT 50
+                """,
+                {"query": self.generate_full_text_query(entity)},
+            )
+            result += "\n".join([el["output"] for el in response])
+        return result
+    
+    def retriever(self, question: str) -> str:
+        """
+            Combined retriever using both structured and unstructured data.
+           
+            Structured: Specific relationships from knowledge graph
+            Unstructured: Semantically similar document chunks
+
+            Example output:
+            Structured data:
+            Augustus - BECAME -> Roman Emperor
+            Augustus - DEFEATED -> Mark Antony
+
+            Unstructured data:
+            #Document Augustus was the founder of the Roman Empire...
+            #Document The transition from Republic to Empire occurred...
+        """
+        print(f"Processing question: {question}")
+        
+        # Get structured graph data
+        structured_data = self.structured_retriever(question)
+        
+        # Get unstructured vector data
+        unstructured_data = [
+            el.page_content for el in self.vector_index.similarity_search(question)
+        ]
+        
+        # Combine both data sources
+        final_data = f"""Structured data:
+                {structured_data}
+
+                Unstructured data:
+                {"#Document ".join(unstructured_data)}
+                """
+        
+        # print(f'Retrived context: {final_data}')
+        print(f"Retrieved context length: {len(final_data)} characters")
+        return final_data
+    
+    def ask(self, question: str, chat_history: List[Tuple[str, str]] = None) -> str:
+        """Ask a question to the RAG system."""
+        query_input = {"question": question}
+        if chat_history:
+            query_input["chat_history"] = chat_history
+        
+        return self.chain.invoke(query_input)
+
+
+def main():
+    """Main function to demonstrate the RAG system."""
+    print("Initializing Neo4j RAG System...")
+    rag_system = Neo4jRAGSystem()
+    
+    # Load new data
+    data_ingestion = DataIngestion(rag_system)
+    # Clear existing data
+    data_ingestion.clear_database()  
+    # Load and process wikipedia 
+    data_ingestion.load_and_process_wikipedia("The Roman empire")
+    
+    print("\n" + "="*100)
+    print("Neo4j RAG System Ready!")
+    print("="*100)
+    
+    # 1: Simple question
+    print("\n1. Demo Simple Question:")
+    simple_question = "How did the Roman empire fall?"
+    simple_answer = rag_system.ask(simple_question)
+    print(f"Q: {simple_question}")
+    print(f"A: {simple_answer}")
+    
+    # 2: Conversational question with history
+    print("\n2. Demo Conversational Question:")
+    chat_history = [("Who was the first emperor?", "Augustus was the first emperor.")]
+    follow_up_question = "When did he become the first emperor?"
+    conversational_answer = rag_system.ask(follow_up_question, chat_history)
+    print(f"Previous context: {chat_history[0]}")
+    print(f"Q: {follow_up_question}")
+    print(f"A: {conversational_answer}")
+    
+    # Interactive mode
+    print("\n3. Interactive Mode:")
+    print("Ask questions about the Roman Empire (type 'quit' to exit):")
+    
+    conversation_history = []
+    while True:
+        user_question = input("\nYour question: ").strip()
+        if user_question.lower() in ['quit', 'exit', 'q']:
+            break
+        
+        if user_question:
+            answer = rag_system.ask(user_question, conversation_history)
+            print(f"Answer: {answer}")
+            
+            # Add to conversation history
+            conversation_history.append((user_question, answer))
+            
+            # Keep only last 3 exchanges to manage context length
+            if len(conversation_history) > 3:
+                conversation_history = conversation_history[-3:]
+
+
+if __name__ == "__main__":
+    main()
