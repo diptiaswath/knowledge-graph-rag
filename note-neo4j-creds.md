@@ -1,4 +1,3 @@
-<!-- @format -->
 
 # Wait 60 seconds before connecting using these details, or login to https://console.neo4j.io to validate the Aura Instance is available
 
